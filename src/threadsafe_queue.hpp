@@ -1,54 +1,164 @@
-#ifndef THREADEDSAFE_QUEUE_HPP
+#ifndef THREADSAFE_QUEUE_HPP
 #define THREADSAFE_QUEUE_HPP
 
-#include <deque>
+#include <queue>
 #include <mutex>
 #include <condition_variable>
-//#include <thread>
+#include <stop_token>
 
-template <typename T>
-class ThreadsafeQueue
-{
-  public:
+#include "common.hpp"
 
-    void push(T const & item);
-    T pop();
+struct OutOfCapacity : public virtual Exception {};
+struct StopRequested : public virtual Exception {};
 
-    size_t const size() const;
+template <typename>
+struct DiscardOnNoCapacity {
+  using PushGuard = std::scoped_lock<std::mutex>;
 
-  private:
-    std::condition_variable cond_;
-    std::mutex mut_;
-    std::deque<T> items_;
+  template <typename... args>
+  bool on_at_capacity(args...) {
+    return false;
+  }
+
+  void on_push(std::condition_variable_any & cond) {
+    cond.notify_one();
+  }
+
+  void on_pop(std::condition_variable_any &) {}
 };
 
-// ------------------------ IMPLEMENTATION ----------------------------------------
+template <typename>
+struct ThrowOnNoCapacity {
+  using PushGuard = std::scoped_lock<std::mutex>;
 
-template <typename T>
-void ThreadsafeQueue<T>::push(const T& item) {
-  {
-    auto lock = std::scoped_lock(mut_);
-    items.push_back(item);
+  template <typename... args>
+  bool on_at_capacity(args...) {
+    throw make_exception<OutOfCapacity>("Out of capacity");
   }
-  cond_.notify_one();
-}
+
+  void on_push(std::condition_variable_any & cond) {
+    cond.notify_one();
+  }
+
+  void on_pop(std::condition_variable_any &) {}
+};
 
 template <typename T>
-T ThreadsafeQueue<T>::pop()
+struct WaitUntilCapacityAvailable
 {
-    auto lock = std::unique_lock(mut);
-    cond.wait(lock, [](){return items.size()});
+  using PushGuard = std::unique_lock<std::mutex>;
 
-    T item = items.front();
-    items.pop_front();
-    return item;
-}
+  bool on_at_capacity(
+    std::unique_lock<std::mutex> & lock,
+    std::condition_variable_any & cond,
+    std::queue<T> & items,
+    size_t capacity
+  ) {
+    cond.wait(lock, [&]() {return items.size() < capacity;});
+    return true;
+  }
 
-template <typename T>
-size_t const ThreadsafeQueue<T>::size() const
+  bool on_at_capacity(
+    std::stop_token stop,
+    std::unique_lock<std::mutex> & lock,
+    std::condition_variable_any & cond,
+    std::queue<T> & items,
+    size_t capacity
+  ) {
+    cond.wait(lock, stop, [&]() {return items.size() < capacity;});
+    return true;
+  }
+
+  void on_push(std::condition_variable_any & cond) {
+    cond.notify_all();
+  }
+
+  void on_pop(std::condition_variable_any & cond) {
+    cond.notify_all();
+  }
+};
+
+//rather incomplete ThreadsafeQueue class
+// - no timed waiting
+// - could have try_pop returning std::optional
+template <
+  typename T,
+  template<class> typename AtMaxCapacityPolicy = WaitUntilCapacityAvailable
+>
+class ThreadsafeQueue : public AtMaxCapacityPolicy<T>
 {
-    auto lock = std::unique_lock(mut);
-    return items.size();
-}
+  public:
+    ThreadsafeQueue(size_t capacity) : capacity_{capacity} {}
+    //can't be safely destroyed while in use given current impl
+    //implicit move/copy ctors/assignments rightfully implicitly deleted because of mutex member
+
+    void push(T && item) {
+      {
+        auto lock = typename AtMaxCapacityPolicy<T>::PushGuard{mut_};
+        if (items_.size() == capacity_)
+          if (!this->on_at_capacity(lock, cond_, items_, capacity_))
+            return;
+        items_.push(std::move(item));
+      }
+      this->on_push(cond_);
+    }
+
+    std::enable_if_t<std::is_same_v<AtMaxCapacityPolicy<T>, WaitUntilCapacityAvailable<T>>>
+    push(std::stop_token stop, T && item) {
+      {
+        auto lock = typename AtMaxCapacityPolicy<T>::PushGuard{mut_};
+        if (items_.size() == capacity_)
+          this->on_at_capacity(stop, lock, cond_, items_, capacity_);
+        if (stop.stop_requested())
+          return;
+        items_.push(std::move(item));
+      }
+      this->on_push(cond_);
+    }
+
+    T pop() {
+      auto locked_part = [&]() {
+        auto lock = std::unique_lock{mut_};
+        cond_.wait(lock, [&]() {return !items_.empty();});
+        auto item = std::move(items_.front());
+        items_.pop();
+        return item;
+      };
+      auto item = locked_part();
+      this->on_pop(cond_);
+      return item;
+    }
+
+    T pop(std::stop_token stop) {
+      auto locked_part = [&]() {
+        auto lock = std::unique_lock{mut_};
+        cond_.wait(lock, stop, [&]() {return !items_.empty();});
+        if (stop.stop_requested())
+          throw make_exception<StopRequested>("");
+        auto item = std::move(items_.front());
+        items_.pop();
+        return item;
+      };
+      auto item = locked_part();
+      this->on_pop(cond_);
+      return item;
+    }
+
+    auto empty() const {
+      auto lock = std::scoped_lock{mut_};
+      return items_.empty();
+    }
+
+    auto size() const {
+      auto lock = std::scoped_lock{mut_};
+      return items_.size();
+    }
+
+  private:
+    size_t capacity_;
+    std::mutex mutable mut_;
+    std::condition_variable_any cond_;
+    std::queue<T> items_;
+};
 
 #endif

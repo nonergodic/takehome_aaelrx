@@ -13,7 +13,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic")
 # set(Boost_USE_RELEASE_LIBS       ON)  # only find release libs
 # set(Boost_USE_MULTITHREADED      ON)
 # set(Boost_USE_STATIC_RUNTIME    OFF)
-find_package(Boost 1.81 REQUIRED COMPONENTS program_options)
+find_package(Boost 1.81 REQUIRED COMPONENTS) # program_options)
 include_directories(${Boost_INCLUDE_DIR})
 
 # Add SQLite3 C++ wrapper around sqlite3 library (and sqlite3 itself provided for ease of use)
@@ -23,6 +23,8 @@ set(SQLITECPP_RUN_CPPCHECK OFF CACHE BOOL "" FORCE)
 set(SQLITECPP_RUN_CPPLINT OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/SQLiteCpp)
 
-add_executable(signing_service src/main.cpp src/startup.cpp)
+file(GLOB_RECURSE SOURCES "src/*.cpp")
+
+add_executable(signing_service ${SOURCES})
 
 target_link_libraries(signing_service cryptopp SQLiteCpp ${Boost_LIBRARIES})

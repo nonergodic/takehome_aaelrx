@@ -1,0 +1,45 @@
+High Level:
+        1) source - SELECT id, message FROM messages WHERE signature IS NULL
+          -> list<pair<id, message>>
+ optional) hash messages to generate a signable digest early
+          map -> list<pair<id, hash(message)>>
+ alterna.) glue code for interfaces (turn records into signables)
+          map -> list<pair<id, signable>>
+        2) create batches of the requested batch size
+          reduce(ish) -> list<list(batch_size)<pair<id, signable>>>
+        3) for each batch: request key (blocks until key available), then sign each signable 
+        3.1) map(async(map)):  list<list(batch_size)<tuple<id, signable, key>>
+        3.2) list<list(batch_size)<tuple<id, signature, signer>>
+        3.3) release key
+        4) sink - atomic UPDATE records with signatures/signer using ids
+
+Components
+  DB source
+  Batcher
+    groups records into batches
+  Key service
+    has deque for keys (alternatively map with timestamps)
+    keeps track of which keys are currently borrowed
+    pops from front
+    push_back on success, push_front on failure/timeout
+  Signer (multiple instances)
+    sign batch using key
+  DB sink
+
+Choice of Queue:
+  boost::lock_free vs ThreadsafeQueue
+
+Choice of Crypto:
+  Secp256k1
+    https://www.cryptopp.com/wiki/Elliptic_Curve_Digital_Signature_Algorithm
+    (+) crypto-canonical (BTC & EVM native, also natively supported on Solana)
+    (-) requires randomness when signing
+
+  ed25519
+    https://en.wikipedia.org/wiki/EdDSA
+    https://www.cryptopp.com/wiki/Ed25519
+    https://blog.peterruppel.de/ed25519-for-ssh/
+    (+) does not require randomness for signing
+    (+) supposedly 20x-30x faster than secp256k1 (see https://www.cryptopp.com/wiki/Ed25519#Benchmarks)
+    (-) bad for large messages
+    (~) verification natively supported on Solana, possible on EVM (see https://ethresear.ch/t/verify-ed25519-signatures-cheaply-on-eth-using-zk-snarks/13139)

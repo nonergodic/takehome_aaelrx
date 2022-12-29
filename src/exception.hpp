@@ -31,7 +31,7 @@ private:
 };
 
 template <typename T>
-typename std::enable_if<std::is_base_of<Exception, T>::value, T>::type make_exception(std::string const & str)
+typename std::enable_if_t<std::is_base_of<Exception, T>::value, T> make_exception(std::string const & str)
 {
   T e;
   e.set_what(str);
@@ -39,7 +39,7 @@ typename std::enable_if<std::is_base_of<Exception, T>::value, T>::type make_exce
 }
 
 template <typename T>
-typename std::enable_if<std::is_base_of<Exception, T>::value, T>::type make_exception(std::string && str) noexcept
+typename std::enable_if_t<std::is_base_of<Exception, T>::value, T> make_exception(std::string && str) noexcept
 {
   T e;
   e.set_what(std::move(str));
